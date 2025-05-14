@@ -7,12 +7,12 @@ Ce projet vise à implémenter un pipeline ETL (Extract, Transform, Load) comple
 ## Technologies Utilisées
 
 -   **Streaming de Données :** Apache Kafka
--   **Orchestration ETL :** Apache Airflow
--   **Traitement Distribué :** Celery avec Redis comme broker/backend
--   **Stockage de Données Agrégées :** Elasticsearch
--   **Exposition API :** FastAPI
+-   **Orchestration ETL :** Apache Airflow (prochaine étape)
+-   **Traitement Distribué :** Celery avec Redis comme broker/backend (prochaine étape)
+-   **Stockage de Données Agrégées :** Elasticsearch (prochaine étape)
+-   **Exposition API :** FastAPI (prochaine étape)
 -   **Conteneurisation :** Docker & Docker Compose
--   **Générateur de Données (Simulation) :** Python (à implémenter)
+-   **Générateur de Données (Simulation) :** Python (implémenté)
 
 ## Structure du Projet
 
@@ -24,29 +24,37 @@ iot_etl_pipeline/
 │   ├── dags/             # Contient les définitions des DAGs Airflow
 │   ├── logs/             # (Généré par Airflow, généralement dans .gitignore)
 │   ├── plugins/          # Plugins Airflow personnalisés
-│   └── Dockerfile        # Dockerfile pour le service Airflow (webserver, scheduler, worker)
+│   └── Dockerfile        # Dockerfile pour le service Airflow (webserver, scheduler, worker) - À VENIR
 ├── celery/               # Logique de traitement (workers Celery), tâches de nettoyage/agrégation
 │   ├── tasks/            # Modules Python définissant les tâches Celery
-│   └── Dockerfile        # Dockerfile pour les workers Celery
+│   └── Dockerfile        # Dockerfile pour les workers Celery - À VENIR
 ├── data_generator/       # Simulateur de capteurs IoT (producteur Kafka)
-│   └── Dockerfile        # Dockerfile pour le service de génération de données
+│   ├── producer.py
+│   ├── requirements.txt
+│   └── Dockerfile
 ├── elasticsearch/        # Configuration Elasticsearch (ex: templates d'index, scripts d'init)
 │                       # Souvent, une image officielle est utilisée directement dans docker-compose.yml,
 │                       # mais ce dossier peut contenir des configurations spécifiques.
-│   └── Dockerfile        # (Optionnel, si une image custom est nécessaire)
+│   └── Dockerfile        # (Optionnel, si une image custom est nécessaire) - À VENIR
 ├── fastapi/              # Application API FastAPI pour l'accès aux données
 │   ├── app/              # Code source de l'application FastAPI
-│   └── Dockerfile        # Dockerfile pour le service FastAPI
+│   └── Dockerfile        # Dockerfile pour le service FastAPI - À VENIR
 ├── kafka/                # Configuration Kafka (ex: scripts de création de topics)
 │                       # Similaire à Elasticsearch, une image officielle est souvent suffisante.
 │   └── Dockerfile        # (Optionnel, si une image custom est nécessaire)
 ├── .env                  # Variables d'environnement pour la configuration des services
 ├── .gitignore            # Fichiers et dossiers à ignorer par Git
-├── docker-compose.yml    # Définition et orchestration des services Docker (À VENIR)
+├── docker-compose.yml    # Définition et orchestration des services Docker
 └── README.md             # Ce fichier
 ```
 
-## Comment Lancer le Projet (Instructions Préliminaires)
+## État Actuel du Projet
+
+Les composants suivants sont configurés et fonctionnels :
+-   **Zookeeper & Kafka :** Pour le streaming des données.
+-   **Data Generator :** Un producteur Python qui simule des données de capteurs IoT pour la ville de Casablanca et les envoie au topic Kafka `iot_sensor_data`.
+
+## Comment Lancer le Projet
 
 Ce projet est conçu pour être entièrement exécuté avec Docker et Docker Compose.
 
@@ -55,31 +63,52 @@ Ce projet est conçu pour être entièrement exécuté avec Docker et Docker Com
     *   Docker Compose installé (généralement inclus avec Docker Desktop).
 
 2.  **Configuration :**
-    *   Assurez-vous que le fichier `.env` à la racine du projet (`iot_etl_pipeline/.env`) est correctement configuré. Vous devrez notamment y ajouter une `AIRFLOW__CORE__FERNET_KEY` valide.
-    *   Vérifiez que les ports définis dans `.env` (et qui seront utilisés dans `docker-compose.yml`) ne sont pas déjà utilisés sur votre machine.
+    *   Assurez-vous que le fichier `.env` à la racine du projet (`iot_etl_pipeline/.env`) est correctement configuré. Les variables importantes pour l'étape actuelle sont `KAFKA_BROKERS`, `KAFKA_SENSOR_DATA_TOPIC`, `DATA_GENERATOR_INTERVAL_SECONDS`.
+    *   (Optionnel) Pour que Kafka crée le topic automatiquement au démarrage, configurez `KAFKA_CREATE_TOPICS` dans le `.env` (ex: `KAFKA_CREATE_TOPICS="iot_sensor_data:1:1"`).
+    *   Vous devrez toujours générer et ajouter une `AIRFLOW__CORE__FERNET_KEY` valide dans `.env` pour les futures étapes avec Airflow.
+    *   Vérifiez que les ports définis dans `.env` et `docker-compose.yml` (ex: `2181` pour Zookeeper, `9093` pour l'accès externe à Kafka) ne sont pas déjà utilisés sur votre machine.
 
-3.  **Lancement (Instructions futures) :**
-    Une fois le fichier `docker-compose.yml` et les `Dockerfile` créés, vous pourrez lancer l'ensemble des services avec :
+3.  **Lancement :**
+    Naviguez à la racine du projet `iot_etl_pipeline/` et exécutez :
     ```bash
-    # Naviguer à la racine du projet iot_etl_pipeline/
-    # cd iot_etl_pipeline
-
-    # Construire les images et démarrer les conteneurs en mode détaché
-    docker-compose up -d --build
+    # Construire les images (si nécessaire) et démarrer les conteneurs en mode détaché
+    docker-compose up --build -d
     ```
+    Cela lancera Zookeeper, Kafka, et le `data_generator`.
 
-4.  **Arrêt (Instructions futures) :**
+4.  **Vérification :**
+    Pour voir les logs du générateur de données (et des autres services) :
+    ```bash
+    docker-compose logs -f data_generator
+    # Ou pour tous les services
+    docker-compose logs -f
+    ```
+    Vous devriez voir le `data_generator` envoyer des messages à Kafka.
+
+5.  **Arrêt :**
     Pour arrêter tous les services :
     ```bash
     docker-compose down
     ```
+    Pour arrêter et supprimer les volumes (si vous voulez repartir de zéro pour Kafka par exemple) :
+    ```bash
+    docker-compose down -v
+    ```
 
 ## Étapes Suivantes
 
-1.  **Définir les `Dockerfile`** pour chaque service dans leurs répertoires respectifs.
-2.  **Créer le fichier `docker-compose.yml`** à la racine (`iot_etl_pipeline/`) pour orchestrer tous les services (Kafka, Zookeeper, Airflow (scheduler, webserver, worker), Celery worker, Redis, Elasticsearch, FastAPI, générateur de données).
-3.  **Implémenter la logique métier** pour chaque composant :
-    *   Scripts du générateur de données.
-    *   DAGs Airflow pour l'orchestration.
-    *   Tâches Celery pour le nettoyage et l'agrégation.
-    *   Endpoints FastAPI pour l'exposition des données. 
+Les prochaines étapes de développement se concentreront sur l'implémentation des composants restants du pipeline ETL :
+
+1.  **Airflow :**
+    *   Configurer les services Airflow (scheduler, webserver, worker - si CeleryExecutor).
+    *   Développer les DAGs pour orchestrer le flux de données depuis Kafka.
+2.  **Celery & Redis :**
+    *   Mettre en place les workers Celery pour le nettoyage et l'agrégation des données.
+    *   Configurer Redis comme broker pour Celery (et pour le backend de résultats si besoin).
+    *   Intégrer Celery avec Airflow (via `CeleryExecutor` ou `CeleryKubernetesExecutor` pour Airflow, ou des `PythonOperators` qui déclenchent des tâches Celery).
+3.  **Elasticsearch :**
+    *   Configurer le service Elasticsearch.
+    *   Développer les tâches (probablement dans Celery/Airflow) pour charger les données agrégées dans Elasticsearch.
+4.  **FastAPI :**
+    *   Développer l'API pour exposer les données brutes (potentiellement depuis Kafka ou une base temporaire) et agrégées (depuis Elasticsearch).
+5.  **Affiner la logique métier** pour chaque composant (nettoyage plus poussé, types d'agrégations spécifiques, etc.). 
