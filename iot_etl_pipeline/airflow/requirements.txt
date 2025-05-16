@@ -1,0 +1,7 @@
+apache-airflow==2.8.1
+kafka-python==2.0.2
+celery==5.3.6
+elasticsearch==8.11.0
+python-dotenv==1.0.0
+psycopg2-binary==2.9.9
+redis==5.0.1 

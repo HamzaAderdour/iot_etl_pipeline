@@ -6,68 +6,158 @@ networks:
 
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.3 # Il est bon de fixer les versions
+    image: confluentinc/cp-zookeeper:7.5.3
     container_name: zookeeper
     hostname: zookeeper
     networks:
       - iot_network
     ports:
       - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     restart: unless-stopped
 
   kafka:
-    image: confluentinc/cp-kafka:7.3.3
+    image: confluentinc/cp-kafka:7.5.3
     container_name: kafka
     hostname: kafka
     networks:
       - iot_network
     ports:
-      # Port pour accès externe (depuis la machine hôte) si nécessaire: localhost:9093 -> kafka_container:9093
-      - "9093:9093" 
+      - "9092:9092"
+      - "9093:9093"
     depends_on:
       - zookeeper
+    volumes:
+      - kafka_data:/var/lib/kafka/data
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: '${KAFKA_ZOOKEEPER_CONNECT:-zookeeper:2181}' # Utilise .env, fallback si non défini
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      # Le producteur (data_generator) se connectera à kafka:9092 (INTERNAL)
-      # Un client sur la machine hôte peut se connecter à localhost:9093 (EXTERNAL)
-      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9093
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      # Pour les images Confluent Platform, ces variables de licence sont souvent nécessaires
-      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
-      # Configuration pour la durabilité des transactions (si utilisées plus tard)
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      # Permet la création de topics via une variable d'environnement (définie dans .env)
-      # Exemple dans .env: KAFKA_CREATE_TOPICS="iot_sensor_data:1:1"
-      KAFKA_CREATE_TOPICS: "${KAFKA_CREATE_TOPICS}"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CREATE_TOPICS: ${KAFKA_CREATE_TOPICS}
     restart: unless-stopped
-
 
   data_generator:
     build:
-      context: ./data_generator # Chemin vers le Dockerfile du producteur
+      context: ./data_generator
       dockerfile: Dockerfile
     container_name: data_generator
     networks:
       - iot_network
     depends_on:
-      - kafka # S'assure que Kafka est démarré avant (mais le script gère les attentes)
-    # Injecte les variables d'environnement depuis le fichier .env
-    # Le script producer.py lira ces variables
+      - kafka
     environment:
-      KAFKA_BROKERS: '${KAFKA_BROKERS:-kafka:9092}' # Assurez-vous que cela correspond au listener INTERNE de Kafka
-      KAFKA_SENSOR_DATA_TOPIC: '${KAFKA_SENSOR_DATA_TOPIC}'
-      DATA_GENERATOR_INTERVAL_SECONDS: '${DATA_GENERATOR_INTERVAL_SECONDS}'
-    restart: on-failure
-    # Optionnel: monter le volume pour développement local pour éviter de reconstruire l'image à chaque changement de code
-    # volumes:
-    #   - ./data_generator:/app 
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_SENSOR_DATA_TOPIC=${KAFKA_SENSOR_DATA_TOPIC}
+      - DATA_GENERATOR_INTERVAL_SECONDS=${DATA_GENERATOR_INTERVAL_SECONDS}
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  airflow-webserver:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-webserver
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - AIRFLOW__CELERY__BROKER_URL=redis://redis:6379/0
+      - AIRFLOW__CELERY__RESULT_BACKEND=redis://redis:6379/0
+      - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-scheduler
+    depends_on:
+      - airflow-webserver
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - AIRFLOW__CELERY__BROKER_URL=redis://redis:6379/0
+      - AIRFLOW__CELERY__RESULT_BACKEND=redis://redis:6379/0
+      - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    command: scheduler
+    restart: unless-stopped
+
+  airflow-worker:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-worker
+    depends_on:
+      - airflow-scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=CeleryExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      - AIRFLOW__CELERY__BROKER_URL=redis://redis:6379/0
+      - AIRFLOW__CELERY__RESULT_BACKEND=redis://redis:6379/0
+      - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW__CORE__FERNET_KEY}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    command: celery worker
+    restart: unless-stopped
+
+volumes:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  postgres_data:
+  redis_data: 
